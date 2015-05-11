@@ -195,7 +195,7 @@ func validate(cliParser cli.CLI) bool {
 	valid := false
 	if len(cliParser.Options[cli.VersionFlag]) != 0 {
 		cli.DisplayVersion(cliParser.Filename)
-	} else if len(cliParser.Options[cli.Source]) == 0 ||
+	} else if (len(cliParser.Options[cli.Source]) == 0 && len(cliParser.Options[cli.CleanFlag]) == 0) ||
 		len(cliParser.Options[cli.HelpFlag]) != 0 ||
 		len(cliParser.Options[cli.TargetDir]) > 1 ||
 		len(cliParser.Options[cli.SpecifyImage]) > 1 {
@@ -210,14 +210,23 @@ func main() {
 	cliParser := cli.ParseOsArgs(os.Args)
 
 	if validate(cliParser) {
-		extension := util.ExtractFileExtension(cliParser.Options[cli.Source][0])
-		image := LookupImageByExtension(extension)
-		if len(cliParser.Options[cli.SpecifyImage]) == 1 {
-			image = LookupImageByOverride(cliParser.Options[cli.SpecifyImage][0], extension)
+		if len(cliParser.Options[cli.CleanFlag]) > 0 {
+			processes := docker.DockerProcesses([]string{"-a", "--no-trunc=true"})
+			for _, process := range processes {
+				fmt.Printf("%s: %s\n", process.ContainerID, process.Image)
+			}
 		}
-		RunDexecContainer(
-			image,
-			cliParser.Options,
-		)
+
+		if len(cliParser.Options[cli.Source]) > 0 {
+			extension := util.ExtractFileExtension(cliParser.Options[cli.Source][0])
+			image := LookupImageByExtension(extension)
+			if len(cliParser.Options[cli.SpecifyImage]) == 1 {
+				image = LookupImageByOverride(cliParser.Options[cli.SpecifyImage][0], extension)
+			}
+			RunDexecContainer(
+				image,
+				cliParser.Options,
+			)
+		}
 	}
 }

@@ -1,10 +1,13 @@
 package docker
 
 import (
+	"bufio"
+	"fmt"
 	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/docker-exec/dexec/util"
 )
@@ -35,6 +38,104 @@ var DockerInfo = func() string {
 // the name of a Docker image to retrieve from the remote Docker repository.
 var DockerPull = func(image string) {
 	out := exec.Command("docker", "pull", image)
+	out.Stdin = os.Stdin
+	out.Stdout = os.Stderr
+	out.Stderr = os.Stderr
+	out.Run()
+}
+
+// Process is what it is.
+type Process struct {
+	ContainerID string
+	Image       string
+}
+
+// ProcessHeader is what it is.
+type ProcessHeader struct {
+	Text           string
+	CharacterWidth int
+}
+
+// DockerProcesses shells out the command 'docker ps'.
+var DockerProcesses = func(args []string) []Process {
+	dockerProcesses := []Process{}
+
+	shellCommand := "docker"
+
+	cmd := exec.Command(shellCommand, util.JoinStringSlices([]string{"ps"}, args)...)
+	cmdReader, err := cmd.StdoutPipe()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error creating StdoutPipe for", err)
+		os.Exit(1)
+	}
+
+	scanner := bufio.NewScanner(cmdReader)
+	go func() {
+		parsedHeaders := false
+
+		headers := []*ProcessHeader{
+			{"CONTAINER ID", 0},
+			{"IMAGE", 0},
+			{"COMMAND", 0},
+			{"CREATED", 0},
+			{"STATUS", 0},
+			{"PORTS", 0},
+			{"NAME", 0},
+		}
+
+		for scanner.Scan() {
+			if !parsedHeaders {
+				for _, header := range headers {
+					r := regexp.MustCompile(fmt.Sprintf("%s\\s*", header.Text))
+					containerHeader := r.FindString(scanner.Text())
+					header.CharacterWidth = len(containerHeader)
+				}
+				parsedHeaders = true
+			} else {
+				var process Process
+
+				cursor := 0
+				for i := 0; i < len(headers); i++ {
+
+					next := headers[i].CharacterWidth
+					if i == len(headers)-1 {
+						next = len(scanner.Text()) - cursor
+					}
+
+					headerKey := headers[i].Text
+					headerValue := strings.TrimSpace(scanner.Text()[cursor : cursor+next])
+
+					if headerKey == "CONTAINER ID" {
+						process.ContainerID = headerValue
+					} else if headerKey == "IMAGE" {
+						process.Image = headerValue
+					}
+
+					cursor += next
+				}
+
+				dockerProcesses = append(dockerProcesses, []Process{process}...)
+			}
+		}
+	}()
+
+	err = cmd.Start()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error starting", err)
+		os.Exit(1)
+	}
+
+	err = cmd.Wait()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error waiting for", err)
+		os.Exit(1)
+	}
+	return dockerProcesses
+}
+
+// DockerImage shells out the command 'docker image'.
+var DockerImage = func(args []string) {
+	out := exec.Command("docker", util.JoinStringSlices([]string{"image"}, args)...)
 	out.Stdin = os.Stdin
 	out.Stdout = os.Stderr
 	out.Stderr = os.Stderr

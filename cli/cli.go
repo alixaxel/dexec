@@ -46,6 +46,9 @@ const (
 
 	// VersionFlag indicates that the option specifies the version flag.
 	VersionFlag OptionType = iota
+
+	// CleanFlag indicates that the option specifies the clean flag.
+	CleanFlag OptionType = iota
 )
 
 // CLI defines a data structure that represents the application's name and
@@ -72,6 +75,7 @@ func ArgToOption(opt string, next string) (OptionType, string, int, error) {
 	patternUpdateFlag := regexp.MustCompile(`^-(-update|u)$`)
 	patternHelpFlag := regexp.MustCompile(`^-(-help|h)$`)
 	patternVersionFlag := regexp.MustCompile(`^-(-version|v)$`)
+	patternCleanFlag := regexp.MustCompile(`^--clean$`)
 
 	switch {
 	case patternStandaloneA.FindStringIndex(opt) != nil:
@@ -98,6 +102,8 @@ func ArgToOption(opt string, next string) (OptionType, string, int, error) {
 		return HelpFlag, "", 1, nil
 	case patternVersionFlag.FindStringIndex(opt) != nil:
 		return VersionFlag, "", 1, nil
+	case patternCleanFlag.FindStringIndex(opt) != nil:
+		return CleanFlag, "", 1, nil
 	case patternSource.FindStringIndex(opt) != nil:
 		return Source, opt, 1, nil
 	default:
@@ -154,7 +160,8 @@ func DisplayHelp(filename string) {
 	fmt.Printf("\t%-50s%s\n", "--build-arg, -b <build argument>", "Pass <build argument> to compiler")
 	fmt.Printf("\t%-50s%s\n", "--include, -i <file|path>", "Mount local <file|path> in dexec container")
 	fmt.Printf("\t%-50s%s\n", "--specify-image, -s <docker image>", "Override the image used with <docker image>")
-	fmt.Printf("\t%-50s%s\n", "--update, -u", "Update")
+	fmt.Printf("\t%-50s%s\n", "--update, -u", "Pull the latest image")
+	fmt.Printf("\t%-50s%s\n", "--clean", "Remove all dexec images")
 	fmt.Printf("\t%-50s%s\n", "--help, -h", "Show help")
 	fmt.Printf("\t%-50s%s\n", "--version, -v", "Display version info")
 }

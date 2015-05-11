@@ -114,6 +114,10 @@ func TestGet(t *testing.T) {
 			OptionData{"-v", ""},
 			WantedData{VersionFlag, "", 1, ""},
 		},
+		{
+			OptionData{"--clean", ""},
+			WantedData{CleanFlag, "", 1, ""},
+		},
 	}
 	for _, c := range cases {
 		gotOptionType, gotOptionValue, gotChomped, _ := ArgToOption(c.opt.first, c.opt.second)
@@ -190,6 +194,24 @@ func TestSpecifyImage(t *testing.T) {
 		got := ParseOsArgs(c.osArgs)
 		if !reflect.DeepEqual(got.Options[SpecifyImage], c.want) {
 			t.Errorf("ParseOsArgs %q != %q", got.Options[SpecifyImage], c.want)
+		}
+	}
+}
+
+func TestCleanImage(t *testing.T) {
+	cases := []struct {
+		osArgs []string
+		want   int
+	}{
+		{
+			[]string{"dexec", "--clean"},
+			1,
+		},
+	}
+	for _, c := range cases {
+		got := ParseOsArgs(c.osArgs)
+		if len(got.Options[CleanFlag]) != c.want {
+			t.Errorf("len(ParseOsArgs(%q)[CleanFlag]) != %q", got.Options[CleanFlag], c.want)
 		}
 	}
 }
