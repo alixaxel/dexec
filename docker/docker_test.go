@@ -36,7 +36,7 @@ func TestExtractDockerVersion(t *testing.T) {
 		version string
 		want    [3]int
 	}{
-		{"Docker version 1.5.0, build abcdef0", [3]int{1, 5, 0}},
+		{"1.5.0", [3]int{1, 5, 0}},
 	}
 	for _, c := range cases {
 		major, minor, patch := ExtractDockerVersion(c.version)
@@ -51,8 +51,8 @@ func TestIsDockerPresent(t *testing.T) {
 		version string
 		want    bool
 	}{
-		{"Docker version 1.5.0, build abcdef0", true},
-		{"Docker version x.y.z, build abcdef0", false},
+		{"1.5.0", true},
+		{"x.y.z", false},
 		{"Mangled version string", false},
 	}
 	for _, c := range cases {
@@ -69,13 +69,13 @@ func TestIsDockerPresent(t *testing.T) {
 
 func TestIsDockerRunning(t *testing.T) {
 	cases := []struct {
-		output string
+		output map[string]interface{}
 		want   bool
 	}{
-		{"Docker info string", true},
+		{map[string]interface{}{"key": "value"}, true},
 	}
 	for _, c := range cases {
-		defer Patch(&DockerInfo, func() string {
+		defer Patch(&DockerInfo, func() map[string]interface{} {
 			return c.output
 		}).Restore()
 

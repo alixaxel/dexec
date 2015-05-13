@@ -1,35 +1,147 @@
 package docker
 
 import (
+	"crypto/tls"
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	"os/user"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/docker-exec/dexec/util"
 )
 
+type httpMethod string
+
+const (
+	get    httpMethod = "GET"
+	put    httpMethod = "PUT"
+	post   httpMethod = "POST"
+	delete httpMethod = "DELETE"
+)
+
+type dockerRequest struct {
+	endpoint string
+	method   httpMethod
+}
+
+var executeDockerRemoteCommand = func(dr dockerRequest) (map[string]interface{}, error) {
+
+	// TEMPORARY HARDCODED DEFAULT BOOT2DOCKER VALUES
+	// TO BE REFACTORED AND GENERALISED TO INCLUDE UNIX SOCKETS AND NON-DEFAULT
+	// BOOT2DOCKER VALUES
+
+	url, _ := url.Parse(fmt.Sprintf("https://192.168.59.103:2376%s", dr.endpoint))
+
+	usr, err := user.Current()
+	if err != nil {
+		panic(err.Error())
+	}
+
+	cert, err := tls.LoadX509KeyPair(
+		fmt.Sprintf("%s/.boot2docker/certs/boot2docker-vm/cert.pem", usr.HomeDir),
+		fmt.Sprintf("%s/.boot2docker/certs/boot2docker-vm/key.pem", usr.HomeDir))
+
+	if err != nil {
+		panic(err.Error())
+	}
+
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			Certificates:       []tls.Certificate{cert},
+			InsecureSkipVerify: true,
+		},
+		DisableCompression: true,
+	}
+
+	client := &http.Client{Transport: tr}
+	request := http.Request{
+		Method: string(dr.method),
+		URL:    url,
+	}
+
+	resp, err := client.Do(&request)
+	if err != nil {
+		panic(err.Error())
+	}
+
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+
+	dec := json.NewDecoder(strings.NewReader(string(body)))
+
+	var m map[string]interface{}
+
+	err = dec.Decode(&m)
+	if err != nil {
+		panic(err.Error())
+	}
+	return m, err
+}
+
 // DockerVersion shells out the command 'docker -v', returning the version
 // information if the command is successful, and panicking if not.
 var DockerVersion = func() string {
-	out, err := exec.Command("docker", "-v").Output()
+	m, err := executeDockerRemoteCommand(dockerRequest{
+		endpoint: "/version",
+		method:   get,
+	})
+
+	dockerVersion := ""
+	for k, v := range m {
+		if k == "Version" {
+			dockerVersion = v.(string)
+		}
+	}
+
 	if err != nil {
 		panic(err.Error())
-	} else {
-		return string(out)
+	} else if dockerVersion == "" {
+		panic("Docker Version was blank")
 	}
+
+	return dockerVersion
 }
+
+// var DockerVersion = func() string {
+// 	out, err := exec.Command("docker", "-v").Output()
+// 	if err != nil {
+// 		panic(err.Error())
+// 	} else {
+// 		return string(out)
+// 	}
+// }
 
 // DockerInfo shells out the command 'docker -info', returning the information
 // if the command is successful and panicking if not.
-var DockerInfo = func() string {
-	out, err := exec.Command("docker", "info").Output()
+var DockerInfo = func() map[string]interface{} {
+
+	m, err := executeDockerRemoteCommand(dockerRequest{
+		endpoint: "/info",
+		method:   get,
+	})
+
 	if err != nil {
 		panic(err.Error())
-	} else {
-		return string(out)
 	}
+
+	return m
 }
+
+// var DockerInfo = func() string {
+// 	out, err := exec.Command("docker", "info").Output()
+// 	if err != nil {
+// 		panic(err.Error())
+// 	} else {
+// 		return string(out)
+// 	}
+// }
 
 // DockerPull shells out the command 'docker pull {{image}}' where image is
 // the name of a Docker image to retrieve from the remote Docker repository.
@@ -45,7 +157,7 @@ var DockerPull = func(image string) {
 // 'Docker version 1.0.0, build abcdef0', extracts the major, minor and patch
 // versions and returns these as a tuple. If the string does not match, panic.
 func ExtractDockerVersion(version string) (int, int, int) {
-	dockerVersionPattern := regexp.MustCompile(`^Docker version (\d+)\.(\d+)\.(\d+), build [a-z0-9]{7}`)
+	dockerVersionPattern := regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)`)
 
 	if dockerVersionPattern.MatchString(version) {
 		match := dockerVersionPattern.FindStringSubmatch(version)
