@@ -123,6 +123,21 @@ func BuildVolumeArgs(path string, targets []string) []string {
 	return volumeArgs
 }
 
+func buildVolumes(path string, targets []string) []docker.Volume {
+	var volumes []docker.Volume
+
+	for _, source := range targets {
+		basename, _ := ExtractBasenameAndPermission(source)
+
+		volumes = append(
+			volumes, docker.Volume{
+				Local:  fmt.Sprintf("%s/%s", path, basename),
+				Remote: fmt.Sprintf("%s/%s", dexecPath, source),
+			})
+	}
+	return volumes
+}
+
 // SanitisePath takes an absolute path as provided by filepath.Abs() and
 // makes it ready to be passed to Docker based on the current OS. So far
 // the only OS format that requires transforming is Windows which is provided
@@ -160,7 +175,13 @@ func RetrievePath(targetDirs []string) string {
 func RunDexecContainer(dexecImage DexecImage, options map[cli.OptionType][]string) {
 	dockerImage := fmt.Sprintf(dexecImageTemplate, dexecImage.image, dexecImage.version)
 
-	volumeArgs := BuildVolumeArgs(RetrievePath(options[cli.TargetDir]), append(options[cli.Source], options[cli.Include]...))
+	// volumeArgs := BuildVolumeArgs(
+	// 	RetrievePath(options[cli.TargetDir]),
+	// 	append(options[cli.Source], options[cli.Include]...))
+
+	volumes := buildVolumes(
+		RetrievePath(options[cli.TargetDir]),
+		append(options[cli.Source], options[cli.Include]...))
 
 	var sourceBasenames []string
 	for _, source := range options[cli.Source] {
@@ -180,7 +201,7 @@ func RunDexecContainer(dexecImage DexecImage, options map[cli.OptionType][]strin
 
 	docker.RunAnonymousContainer(
 		dockerImage,
-		volumeArgs,
+		volumes,
 		entrypointArgs,
 	)
 }

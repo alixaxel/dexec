@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,8 +14,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-
-	"github.com/docker-exec/dexec/util"
 )
 
 type httpMethod string
@@ -27,8 +26,10 @@ const (
 )
 
 type dockerRequest struct {
-	endpoint string
-	method   httpMethod
+	apiVersion string
+	endpoint   string
+	method     httpMethod
+	payload    string
 }
 
 var executeDockerRemoteCommand = func(dr dockerRequest) (map[string]interface{}, error) {
@@ -37,7 +38,9 @@ var executeDockerRemoteCommand = func(dr dockerRequest) (map[string]interface{},
 	// TO BE REFACTORED AND GENERALISED TO INCLUDE UNIX SOCKETS AND NON-DEFAULT
 	// BOOT2DOCKER VALUES
 
-	url, _ := url.Parse(fmt.Sprintf("https://192.168.59.103:2376%s", dr.endpoint))
+	apiVersion := "v1.18"
+
+	url, _ := url.Parse(fmt.Sprintf("https://192.168.59.103:2376/%s%s", apiVersion, dr.endpoint))
 
 	usr, err := user.Current()
 	if err != nil {
@@ -66,6 +69,8 @@ var executeDockerRemoteCommand = func(dr dockerRequest) (map[string]interface{},
 		URL:    url,
 	}
 
+	log.Println(fmt.Sprintf("%s request to %s", string(dr.method), url.String()))
+
 	resp, err := client.Do(&request)
 	if err != nil {
 		panic(err.Error())
@@ -73,6 +78,8 @@ var executeDockerRemoteCommand = func(dr dockerRequest) (map[string]interface{},
 
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
+
+	log.Println(string(body))
 
 	dec := json.NewDecoder(strings.NewReader(string(body)))
 
@@ -109,15 +116,6 @@ var DockerVersion = func() string {
 	return dockerVersion
 }
 
-// var DockerVersion = func() string {
-// 	out, err := exec.Command("docker", "-v").Output()
-// 	if err != nil {
-// 		panic(err.Error())
-// 	} else {
-// 		return string(out)
-// 	}
-// }
-
 // DockerInfo shells out the command 'docker -info', returning the information
 // if the command is successful and panicking if not.
 var DockerInfo = func() map[string]interface{} {
@@ -133,15 +131,6 @@ var DockerInfo = func() map[string]interface{} {
 
 	return m
 }
-
-// var DockerInfo = func() string {
-// 	out, err := exec.Command("docker", "info").Output()
-// 	if err != nil {
-// 		panic(err.Error())
-// 	} else {
-// 		return string(out)
-// 	}
-// }
 
 // DockerPull shells out the command 'docker pull {{image}}' where image is
 // the name of a Docker image to retrieve from the remote Docker repository.
@@ -198,25 +187,62 @@ func IsDockerRunning() (running bool) {
 	return
 }
 
+// Volume is as Volume does.
+type Volume struct {
+	Local  string
+	Remote string
+}
+
 // RunAnonymousContainer shells out the command:
 // 'docker run --rm {{extraDockerArgs}} -t {{image}} {{entrypointArgs}}'.
 // This will run an anonymouse Docker container with the specified image, with
 // any extra arguments to pass to Docker, for example directories to mount,
 // as well as arguments to pass to the image's entrypoint.
-func RunAnonymousContainer(image string, extraDockerArgs []string, entrypointArgs []string) {
-	baseDockerArgs := []string{"run", "--rm"}
-	imageDockerArgs := []string{"-t", image}
-	out := exec.Command(
-		"docker",
-		util.JoinStringSlices(
-			baseDockerArgs,
-			extraDockerArgs,
-			imageDockerArgs,
-			entrypointArgs,
-		)...,
-	)
-	out.Stdin = os.Stdin
-	out.Stdout = os.Stdout
-	out.Stderr = os.Stderr
-	out.Run()
+func RunAnonymousContainer(image string, volumes []Volume, entrypointArgs []string) {
+
+	payload := map[string]interface{}{
+		"Image": image,
+	}
+
+	enc, err := json.Marshal(payload)
+
+	if err != nil {
+		log.Println(err.Error())
+	}
+
+	log.Println(string(enc))
+
+	defer func() {
+		if r := recover(); r != nil {
+			log.Println("err....", r)
+		}
+	}()
+
+	_, err = executeDockerRemoteCommand(dockerRequest{
+		endpoint: "/containers/create",
+		method:   post,
+		payload:  string(enc),
+	})
+
+	if err != nil {
+		log.Println(err)
+	}
+
+	//log.Println(payload["bar"].(map[string]interface{})["key"])
+
+	// baseDockerArgs := []string{"run", "--rm"}
+	// imageDockerArgs := []string{"-t", image}
+	// out := exec.Command(
+	// 	"docker",
+	// 	util.JoinStringSlices(
+	// 		baseDockerArgs,
+	// 		extraDockerArgs,
+	// 		imageDockerArgs,
+	// 		entrypointArgs,
+	// 	)...,
+	// )
+	// out.Stdin = os.Stdin
+	// out.Stdout = os.Stdout
+	// out.Stderr = os.Stderr
+	// out.Run()
 }
