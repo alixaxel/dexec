@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/user"
@@ -33,7 +34,13 @@ type dockerRequest struct {
 	parameters map[string]string
 }
 
-var executeDockerRemoteCommand = func(dr dockerRequest) (int, map[string]interface{}, error) {
+type dockerResponse struct {
+	statusCode int
+	status     string
+	payload    map[string]interface{}
+}
+
+var executeDockerRemoteCommand = func(dr dockerRequest) (dockerResponse, error) {
 
 	// TEMPORARY HARDCODED DEFAULT BOOT2DOCKER VALUES
 	// TO BE REFACTORED AND GENERALISED TO INCLUDE UNIX SOCKETS AND NON-DEFAULT
@@ -43,7 +50,7 @@ var executeDockerRemoteCommand = func(dr dockerRequest) (int, map[string]interfa
 
 	rawURL := fmt.Sprintf("https://192.168.59.103:2376/%s%s?", apiVersion, dr.endpoint)
 	for k, v := range dr.parameters {
-		rawURL = fmt.Sprintf("%s%s=%s&", rawURL, k, v)
+		rawURL = fmt.Sprintf("%s%s=%s&", rawURL, url.QueryEscape(k), url.QueryEscape(v))
 	}
 
 	log.Println(rawURL)
@@ -107,7 +114,7 @@ var executeDockerRemoteCommand = func(dr dockerRequest) (int, map[string]interfa
 
 	var m map[string]interface{}
 
-	if resp.ContentLength > 0 {
+	if resp.ContentLength > 0 && resp.Header["Content-Type"][0] == "application/json" {
 		dec := json.NewDecoder(strings.NewReader(string(body)))
 
 		err = dec.Decode(&m)
@@ -115,19 +122,23 @@ var executeDockerRemoteCommand = func(dr dockerRequest) (int, map[string]interfa
 			panic(err.Error())
 		}
 	}
-	return resp.StatusCode, m, err
+	return dockerResponse{
+		statusCode: resp.StatusCode,
+		status:     resp.Status,
+		payload:    m,
+	}, err
 }
 
 // DockerVersion shells out the command 'docker -v', returning the version
 // information if the command is successful, and panicking if not.
 var DockerVersion = func() string {
-	_, m, err := executeDockerRemoteCommand(dockerRequest{
+	response, err := executeDockerRemoteCommand(dockerRequest{
 		endpoint: "/version",
 		method:   get,
 	})
 
 	dockerVersion := ""
-	for k, v := range m {
+	for k, v := range response.payload {
 		if k == "Version" {
 			dockerVersion = v.(string)
 		}
@@ -146,7 +157,7 @@ var DockerVersion = func() string {
 // if the command is successful and panicking if not.
 var DockerInfo = func() map[string]interface{} {
 
-	_, m, err := executeDockerRemoteCommand(dockerRequest{
+	response, err := executeDockerRemoteCommand(dockerRequest{
 		endpoint: "/info",
 		method:   get,
 	})
@@ -155,7 +166,7 @@ var DockerInfo = func() map[string]interface{} {
 		panic(err.Error())
 	}
 
-	return m
+	return response.payload
 }
 
 // DockerPull shells out the command 'docker pull {{image}}' where image is
@@ -213,18 +224,47 @@ func IsDockerRunning() (running bool) {
 	return
 }
 
-// Volume is as Volume does.
-type Volume struct {
-	Local  string
-	Remote string
+func pullImage(image string, tag string) error {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Error pulling image %s:%s", image, tag)
+			log.Println(r)
+		}
+	}()
+
+	response, err := executeDockerRemoteCommand(dockerRequest{
+		endpoint: "/images/create",
+		method:   post,
+		parameters: map[string]string{
+			"fromImage": image,
+			"tag":       tag,
+		},
+	})
+
+	if response.statusCode == 200 {
+		log.Println(response.payload["progress"])
+	}
+
+	if response.statusCode != 200 {
+		return fmt.Errorf("Pull image '%s:%s' unsuccessful: %d (%s)", image, tag, response.statusCode, response.status)
+	}
+	return err
 }
 
-// RunAnonymousContainer shells out the command:
-// 'docker run --rm {{extraDockerArgs}} -t {{image}} {{entrypointArgs}}'.
-// This will run an anonymouse Docker container with the specified image, with
-// any extra arguments to pass to Docker, for example directories to mount,
-// as well as arguments to pass to the image's entrypoint.
-func RunAnonymousContainer(image string, volumes []Volume, entrypointArgs []string) {
+func extractImageNameAndTag(fullImage string) (string, string) {
+	imageRegex := regexp.MustCompile("(.+):(.+)")
+	matches := imageRegex.FindStringSubmatch(fullImage)
+	log.Println(matches)
+	if len(matches) == 3 {
+		return matches[1], matches[2]
+	}
+	return fullImage, "latest"
+}
+
+func createContainer(image string) (string, error) {
+
+	var containerID string
+	retryAttempt := 0
 
 	payload := map[string]interface{}{
 		"Image": image,
@@ -238,56 +278,115 @@ func RunAnonymousContainer(image string, volumes []Volume, entrypointArgs []stri
 
 	log.Println(string(enc))
 
-	// defer func() {
-	// 	if r := recover(); r != nil {
-	// 		log.Println("err....", r)
-	// 	}
-	// }()
-
-	var containerID string
-	retryAttempt := 0
-
 	for containerID = ""; containerID == "" && retryAttempt < 3; retryAttempt++ {
-		statusCode, resp, err := executeDockerRemoteCommand(dockerRequest{
+		response, err := executeDockerRemoteCommand(dockerRequest{
 			endpoint: "/containers/create",
 			method:   post,
 			payload:  string(enc),
 		})
 
-		if err != nil {
+		if response.statusCode == 404 {
+			imageName, imageTag := extractImageNameAndTag(image)
+			pullImage(imageName, imageTag)
+		} else if err != nil {
 			log.Println(err)
-		} else if statusCode == 404 {
-			imageR := regexp.MustCompile("(.*):(.*)")
-			matches := imageR.FindAllString(image, len(image))
-
-			imageName := matches[0]
-			imageTag := matches[1]
-
-			executeDockerRemoteCommand(dockerRequest{
-				endpoint: "/images/create",
-				method:   post,
-				parameters: map[string]string{
-					"fromImage": imageName,
-					"tag":       imageTag,
-				},
-			})
 		} else {
-			containerID = resp["Id"].(string)
+			containerID = response.payload["Id"].(string)
 		}
 	}
 
-	_, _, err = executeDockerRemoteCommand(dockerRequest{
+	return containerID, nil
+}
+
+// Volume is as Volume does.
+type Volume struct {
+	Local  string
+	Remote string
+}
+
+func stopContainer(containerID string) error {
+	executeDockerRemoteCommand(dockerRequest{
 		endpoint: fmt.Sprintf("/containers/%s/stop", containerID),
 		method:   post,
 		parameters: map[string]string{
 			"t": "5",
 		},
 	})
+	return nil
+}
 
-	_, _, err = executeDockerRemoteCommand(dockerRequest{
+func deleteContainer(containerID string) error {
+	executeDockerRemoteCommand(dockerRequest{
 		endpoint: fmt.Sprintf("/containers/%s", containerID),
 		method:   delete,
 	})
+	return nil
+}
+
+func runContainer(containerID string, volumes []Volume) error {
+	binds := []string{}
+
+	for _, volume := range volumes {
+		binds = append(binds, fmt.Sprintf("%s:%s", volume.Local, volume.Remote))
+	}
+
+	payload := map[string]interface{}{
+		"startOptions": map[string]interface{}{
+			"Binds": binds,
+		},
+	}
+
+	enc, err := json.Marshal(payload)
+
+	if err != nil {
+		log.Println(err.Error())
+	}
+
+	log.Println(string(enc))
+
+	response, err := executeDockerRemoteCommand(dockerRequest{
+		endpoint: fmt.Sprintf("/containers/%s/start", containerID),
+		method:   post,
+		payload:  string(enc),
+	})
+
+	if err == nil {
+		log.Println("---------------")
+		log.Println(response.payload)
+	}
+
+	return err
+}
+
+// RunAnonymousContainer shells out the command:
+// 'docker run --rm {{extraDockerArgs}} -t {{image}} {{entrypointArgs}}'.
+// This will run an anonymouse Docker container with the specified image, with
+// any extra arguments to pass to Docker, for example directories to mount,
+// as well as arguments to pass to the image's entrypoint.
+func RunAnonymousContainer(image string, volumes []Volume, entrypointArgs []string) {
+
+	// defer func() {
+	// 	if r := recover(); r != nil {
+	// 		log.Println("err....", r)
+	// 	}
+	// }()
+
+	containerID, _ := createContainer(image)
+
+	if containerID != "" {
+		err := runContainer(containerID, volumes)
+		if err != nil {
+			log.Println("problem running container")
+		}
+		// err = stopContainer(containerID)
+		// if err != nil {
+		// 	log.Println("unable to stop container")
+		// }
+		// err = deleteContainer(containerID)
+		// if err != nil {
+		// 	log.Println("unable to delete container")
+		// }
+	}
 
 	// baseDockerArgs := []string{"run", "--rm"}
 	// imageDockerArgs := []string{"-t", image}
