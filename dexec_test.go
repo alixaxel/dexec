@@ -1,25 +1,6 @@
 package main
 
-import (
-	"reflect"
-	"testing"
-)
-
-func TestBuildVolumeArgs(t *testing.T) {
-	cases := []struct {
-		path        string
-		targets     []string
-		wantVolumes []string
-	}{
-		{"/foo", []string{"bar"}, []string{"-v", "/foo/bar:/tmp/dexec/build/bar"}},
-	}
-	for _, c := range cases {
-		gotVolumes := BuildVolumeArgs(c.path, c.targets)
-		if !reflect.DeepEqual(gotVolumes, c.wantVolumes) {
-			t.Errorf("BuildVolumeArgs(%q, %q) %q != %q", c.path, c.targets, gotVolumes, c.wantVolumes)
-		}
-	}
-}
+import "testing"
 
 func TestSanitisePath(t *testing.T) {
 	cases := []struct {

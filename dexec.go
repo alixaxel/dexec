@@ -103,26 +103,6 @@ func ExtractBasenameAndPermission(path string) (string, string) {
 	return basename, permission
 }
 
-// BuildVolumeArgs takes a base path and returns an array of Docker volume
-// arguments. The array takes the form {"-v", "/foo:/bar:[rw|ro]", ...} for
-// each source or include.
-func BuildVolumeArgs(path string, targets []string) []string {
-	var volumeArgs []string
-
-	for _, source := range targets {
-		basename, _ := ExtractBasenameAndPermission(source)
-
-		volumeArgs = append(
-			volumeArgs,
-			[]string{
-				"-v",
-				fmt.Sprintf(dexecVolumeTemplate, path, basename, dexecPath, source),
-			}...,
-		)
-	}
-	return volumeArgs
-}
-
 func buildVolumes(path string, targets []string) []docker.Volume {
 	var volumes []docker.Volume
 
@@ -173,12 +153,6 @@ func RetrievePath(targetDirs []string) string {
 // image, mounting the specified sources and includes and passing the
 // list of sources and arguments to the entrypoint.
 func RunDexecContainer(dexecImage DexecImage, options map[cli.OptionType][]string) {
-	dockerImage := fmt.Sprintf(dexecImageTemplate, dexecImage.image, dexecImage.version)
-
-	// volumeArgs := BuildVolumeArgs(
-	// 	RetrievePath(options[cli.TargetDir]),
-	// 	append(options[cli.Source], options[cli.Include]...))
-
 	volumes := buildVolumes(
 		RetrievePath(options[cli.TargetDir]),
 		append(options[cli.Source], options[cli.Include]...))
@@ -196,11 +170,12 @@ func RunDexecContainer(dexecImage DexecImage, options map[cli.OptionType][]strin
 	)
 
 	if len(options[cli.UpdateFlag]) > 0 {
-		docker.DockerPull(dockerImage)
+		docker.DockerPull(dexecImage.image, dexecImage.version)
 	}
 
 	docker.RunAnonymousContainer(
-		dockerImage,
+		dexecImage.image,
+		dexecImage.version,
 		volumes,
 		entrypointArgs,
 	)

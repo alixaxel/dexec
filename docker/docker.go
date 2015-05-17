@@ -9,22 +9,19 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"os"
-	"os/exec"
 	"os/user"
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 )
 
 type httpMethod string
 
 const (
-	get    httpMethod = "GET"
-	put    httpMethod = "PUT"
-	post   httpMethod = "POST"
-	delete httpMethod = "DELETE"
+	httpGet    httpMethod = "GET"
+	httpPut    httpMethod = "PUT"
+	httpPost   httpMethod = "POST"
+	httpDelete httpMethod = "DELETE"
 )
 
 type dockerRequest struct {
@@ -41,7 +38,13 @@ type dockerResponse struct {
 	payload    map[string]interface{}
 }
 
-var executeDockerRemoteCommand = func(dr dockerRequest) (dockerResponse, error) {
+// Volume is as Volume does.
+type Volume struct {
+	Local  string
+	Remote string
+}
+
+var executeDockerRemoteCommand = func(dr dockerRequest, showOutput ...bool) (dockerResponse, error) {
 
 	// TEMPORARY HARDCODED DEFAULT BOOT2DOCKER VALUES
 	// TO BE REFACTORED AND GENERALISED TO INCLUDE UNIX SOCKETS AND NON-DEFAULT
@@ -53,8 +56,6 @@ var executeDockerRemoteCommand = func(dr dockerRequest) (dockerResponse, error) 
 	for k, v := range dr.parameters {
 		rawURL = fmt.Sprintf("%s%s=%s&", rawURL, url.QueryEscape(k), url.QueryEscape(v))
 	}
-
-	log.Println(rawURL)
 
 	usr, err := user.Current()
 	if err != nil {
@@ -85,20 +86,11 @@ var executeDockerRemoteCommand = func(dr dockerRequest) (dockerResponse, error) 
 		bytes.NewBufferString(dr.payload))
 	request.Header.Add("Content-Type", "application/json")
 
-	log.Println("QUERY")
-	log.Println(request.URL.Query())
-
-	log.Println(request)
-
-	log.Println(fmt.Sprintf("%s request to %s", string(dr.method), rawURL))
-
 	resp, err := client.Do(request)
 	if err != nil {
 		log.Println(err.Error())
 		panic(err.Error())
 	}
-
-	log.Println(fmt.Sprintf("Response status: %s (%d)", resp.Status, resp.StatusCode))
 
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
@@ -107,7 +99,11 @@ var executeDockerRemoteCommand = func(dr dockerRequest) (dockerResponse, error) 
 		panic(err.Error())
 	}
 
-	log.Println(string(body))
+	if len(showOutput) > 0 && showOutput[0] {
+		outputRegex := regexp.MustCompile("[\\s\n]+(.*)")
+		output := outputRegex.FindStringSubmatch(string(body))[1]
+		fmt.Printf("%s", output)
+	}
 
 	if resp.StatusCode == 500 {
 		panic(fmt.Sprintf("Response status: %s (%d)", resp.Status, resp.StatusCode))
@@ -135,7 +131,7 @@ var executeDockerRemoteCommand = func(dr dockerRequest) (dockerResponse, error) 
 var DockerVersion = func() string {
 	response, err := executeDockerRemoteCommand(dockerRequest{
 		endpoint: "/version",
-		method:   get,
+		method:   httpGet,
 	})
 
 	dockerVersion := ""
@@ -160,7 +156,7 @@ var DockerInfo = func() map[string]interface{} {
 
 	response, err := executeDockerRemoteCommand(dockerRequest{
 		endpoint: "/info",
-		method:   get,
+		method:   httpGet,
 	})
 
 	if err != nil {
@@ -172,12 +168,8 @@ var DockerInfo = func() map[string]interface{} {
 
 // DockerPull shells out the command 'docker pull {{image}}' where image is
 // the name of a Docker image to retrieve from the remote Docker repository.
-var DockerPull = func(image string) {
-	out := exec.Command("docker", "pull", image)
-	out.Stdin = os.Stdin
-	out.Stdout = os.Stderr
-	out.Stderr = os.Stderr
-	out.Run()
+var DockerPull = func(imageName string, imageTag string) {
+	pullImage(imageName, imageTag)
 }
 
 // ExtractDockerVersion takes a Docker version string in the format:
@@ -235,7 +227,7 @@ func pullImage(image string, tag string) error {
 
 	response, err := executeDockerRemoteCommand(dockerRequest{
 		endpoint: "/images/create",
-		method:   post,
+		method:   httpPost,
 		parameters: map[string]string{
 			"fromImage": image,
 			"tag":       tag,
@@ -252,17 +244,11 @@ func pullImage(image string, tag string) error {
 	return err
 }
 
-func extractImageNameAndTag(fullImage string) (string, string) {
-	imageRegex := regexp.MustCompile("(.+):(.+)")
-	matches := imageRegex.FindStringSubmatch(fullImage)
-	log.Println(matches)
-	if len(matches) == 3 {
-		return matches[1], matches[2]
-	}
-	return fullImage, "latest"
-}
-
-func createContainer(image string, volumes []Volume, entrypointArgs []string) (string, error) {
+func createContainer(
+	imageName string,
+	imageTag string,
+	volumes []Volume,
+	entrypointArgs []string) (string, error) {
 
 	var containerID string
 	retryAttempt := 0
@@ -273,7 +259,7 @@ func createContainer(image string, volumes []Volume, entrypointArgs []string) (s
 	}
 
 	payload := map[string]interface{}{
-		"Image": image,
+		"Image": fmt.Sprintf("%s:%s", imageName, imageTag),
 		"Cmd":   entrypointArgs,
 		"HostConfig": map[string]interface{}{
 			"Binds": bindVolumes,
@@ -286,17 +272,14 @@ func createContainer(image string, volumes []Volume, entrypointArgs []string) (s
 		log.Println(err.Error())
 	}
 
-	log.Println(string(enc))
-
 	for containerID = ""; containerID == "" && retryAttempt < 3; retryAttempt++ {
 		response, err := executeDockerRemoteCommand(dockerRequest{
 			endpoint: "/containers/create",
-			method:   post,
+			method:   httpPost,
 			payload:  string(enc),
 		})
 
 		if response.statusCode == 404 {
-			imageName, imageTag := extractImageNameAndTag(image)
 			pullImage(imageName, imageTag)
 		} else if err != nil {
 			log.Println(err)
@@ -308,16 +291,10 @@ func createContainer(image string, volumes []Volume, entrypointArgs []string) (s
 	return containerID, nil
 }
 
-// Volume is as Volume does.
-type Volume struct {
-	Local  string
-	Remote string
-}
-
 func stopContainer(containerID string) error {
 	executeDockerRemoteCommand(dockerRequest{
 		endpoint: fmt.Sprintf("/containers/%s/stop", containerID),
-		method:   post,
+		method:   httpPost,
 		parameters: map[string]string{
 			"t": "5",
 		},
@@ -328,7 +305,7 @@ func stopContainer(containerID string) error {
 func deleteContainer(containerID string) error {
 	executeDockerRemoteCommand(dockerRequest{
 		endpoint: fmt.Sprintf("/containers/%s", containerID),
-		method:   delete,
+		method:   httpDelete,
 	})
 	return nil
 }
@@ -336,40 +313,29 @@ func deleteContainer(containerID string) error {
 func inspectImage(imageName string, imageTag string) (map[string]interface{}, error) {
 	response, err := executeDockerRemoteCommand(dockerRequest{
 		endpoint: fmt.Sprintf("/images/%s:%s/json", imageName, imageTag),
-		method:   get,
+		method:   httpGet,
 	})
 	return response.payload, err
 }
 
 func attachToContainer(containerID string) error {
-	response, err := executeDockerRemoteCommand(dockerRequest{
+	_, err := executeDockerRemoteCommand(dockerRequest{
 		endpoint: fmt.Sprintf("/containers/%s/attach", containerID),
-		method:   post,
+		method:   httpPost,
 		parameters: map[string]string{
 			"logs":   "0",
 			"stream": "1",
 			"stdout": "1",
 		},
-	})
-	if err == nil {
-		log.Println("---------------")
-		log.Println(response.payload)
-	}
-
+	}, true)
 	return err
 }
 
 func runContainer(containerID string) error {
-	response, err := executeDockerRemoteCommand(dockerRequest{
+	_, err := executeDockerRemoteCommand(dockerRequest{
 		endpoint: fmt.Sprintf("/containers/%s/start", containerID),
-		method:   post,
+		method:   httpPost,
 	})
-
-	if err == nil {
-		log.Println("---------------")
-		log.Println(response.payload)
-	}
-
 	return err
 }
 
@@ -378,66 +344,51 @@ func runContainer(containerID string) error {
 // This will run an anonymouse Docker container with the specified image, with
 // any extra arguments to pass to Docker, for example directories to mount,
 // as well as arguments to pass to the image's entrypoint.
-func RunAnonymousContainer(image string, volumes []Volume, entrypointArgs []string) {
+func RunAnonymousContainer(
+	imageName string,
+	imageTag string,
+	volumes []Volume,
+	entrypointArgs []string) {
 
-	// defer func() {
-	// 	if r := recover(); r != nil {
-	// 		log.Println("err....", r)
-	// 	}
-	// }()
-
-	containerID, _ := createContainer(image, volumes, entrypointArgs)
+	containerID, _ := createContainer(imageName, imageTag, volumes, entrypointArgs)
 
 	if containerID != "" {
-		jobs := make(chan int)
+		attach := make(chan bool)
 		done := make(chan bool)
 
 		go func() {
 			for {
-				_, more := <-jobs
+				_, more := <-attach
 				if more {
 					err := attachToContainer(containerID)
 					if err != nil {
 						log.Println("problem attaching to container")
 					}
 				} else {
-					fmt.Println("received all jobs")
 					done <- true
 					return
 				}
 			}
 		}()
-		jobs <- 0
-		time.Sleep(2000)
+
+		attach <- true
+
 		err := runContainer(containerID)
 		if err != nil {
 			log.Println("problem running container")
 		}
-		close(jobs)
+
+		close(attach)
 		<-done
+
 		err = stopContainer(containerID)
 		if err != nil {
 			log.Println("unable to stop container")
 		}
+
 		err = deleteContainer(containerID)
 		if err != nil {
 			log.Println("unable to delete container")
 		}
 	}
-
-	// baseDockerArgs := []string{"run", "--rm"}
-	// imageDockerArgs := []string{"-t", image}
-	// out := exec.Command(
-	// 	"docker",
-	// 	util.JoinStringSlices(
-	// 		baseDockerArgs,
-	// 		extraDockerArgs,
-	// 		imageDockerArgs,
-	// 		entrypointArgs,
-	// 	)...,
-	// )
-	// out.Stdin = os.Stdin
-	// out.Stdout = os.Stdout
-	// out.Stderr = os.Stderr
-	// out.Run()
 }
