@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type httpMethod string
@@ -261,13 +262,22 @@ func extractImageNameAndTag(fullImage string) (string, string) {
 	return fullImage, "latest"
 }
 
-func createContainer(image string) (string, error) {
+func createContainer(image string, volumes []Volume, entrypointArgs []string) (string, error) {
 
 	var containerID string
 	retryAttempt := 0
 
+	var bindVolumes []string
+	for _, volume := range volumes {
+		bindVolumes = append(bindVolumes, fmt.Sprintf("%s:%s", volume.Local, volume.Remote))
+	}
+
 	payload := map[string]interface{}{
 		"Image": image,
+		"Cmd":   entrypointArgs,
+		"HostConfig": map[string]interface{}{
+			"Binds": bindVolumes,
+		},
 	}
 
 	enc, err := json.Marshal(payload)
@@ -323,31 +333,36 @@ func deleteContainer(containerID string) error {
 	return nil
 }
 
-func runContainer(containerID string, volumes []Volume) error {
-	binds := []string{}
+func inspectImage(imageName string, imageTag string) (map[string]interface{}, error) {
+	response, err := executeDockerRemoteCommand(dockerRequest{
+		endpoint: fmt.Sprintf("/images/%s:%s/json", imageName, imageTag),
+		method:   get,
+	})
+	return response.payload, err
+}
 
-	for _, volume := range volumes {
-		binds = append(binds, fmt.Sprintf("%s:%s", volume.Local, volume.Remote))
-	}
-
-	payload := map[string]interface{}{
-		"startOptions": map[string]interface{}{
-			"Binds": binds,
+func attachToContainer(containerID string) error {
+	response, err := executeDockerRemoteCommand(dockerRequest{
+		endpoint: fmt.Sprintf("/containers/%s/attach", containerID),
+		method:   post,
+		parameters: map[string]string{
+			"logs":   "0",
+			"stream": "1",
+			"stdout": "1",
 		},
+	})
+	if err == nil {
+		log.Println("---------------")
+		log.Println(response.payload)
 	}
 
-	enc, err := json.Marshal(payload)
+	return err
+}
 
-	if err != nil {
-		log.Println(err.Error())
-	}
-
-	log.Println(string(enc))
-
+func runContainer(containerID string) error {
 	response, err := executeDockerRemoteCommand(dockerRequest{
 		endpoint: fmt.Sprintf("/containers/%s/start", containerID),
 		method:   post,
-		payload:  string(enc),
 	})
 
 	if err == nil {
@@ -371,21 +386,43 @@ func RunAnonymousContainer(image string, volumes []Volume, entrypointArgs []stri
 	// 	}
 	// }()
 
-	containerID, _ := createContainer(image)
+	containerID, _ := createContainer(image, volumes, entrypointArgs)
 
 	if containerID != "" {
-		err := runContainer(containerID, volumes)
+		jobs := make(chan int)
+		done := make(chan bool)
+
+		go func() {
+			for {
+				_, more := <-jobs
+				if more {
+					err := attachToContainer(containerID)
+					if err != nil {
+						log.Println("problem attaching to container")
+					}
+				} else {
+					fmt.Println("received all jobs")
+					done <- true
+					return
+				}
+			}
+		}()
+		jobs <- 0
+		time.Sleep(2000)
+		err := runContainer(containerID)
 		if err != nil {
 			log.Println("problem running container")
 		}
-		// err = stopContainer(containerID)
-		// if err != nil {
-		// 	log.Println("unable to stop container")
-		// }
-		// err = deleteContainer(containerID)
-		// if err != nil {
-		// 	log.Println("unable to delete container")
-		// }
+		close(jobs)
+		<-done
+		err = stopContainer(containerID)
+		if err != nil {
+			log.Println("unable to stop container")
+		}
+		err = deleteContainer(containerID)
+		if err != nil {
+			log.Println("unable to delete container")
+		}
 	}
 
 	// baseDockerArgs := []string{"run", "--rm"}
