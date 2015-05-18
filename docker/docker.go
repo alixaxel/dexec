@@ -268,7 +268,7 @@ func pullImage(image string, tag string) error {
 			"fromImage": image,
 			"tag":       tag,
 		},
-	})
+	}, true)
 
 	if response.statusCode == 200 {
 		log.Println(response.payload["progress"])
