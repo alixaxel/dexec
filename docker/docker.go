@@ -134,8 +134,7 @@ var executeDockerRemoteCommand = func(dr dockerRequest, showOutput ...bool) (doc
 			}
 
 		} else {
-			output := string(body)
-			fmt.Println(output)
+			os.Stderr.Write(body)
 		}
 
 	}
@@ -256,8 +255,7 @@ func IsDockerRunning() (running bool) {
 func pullImage(image string, tag string) error {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("Error pulling image %s:%s", image, tag)
-			log.Println(r)
+			os.Stderr.WriteString(fmt.Sprintf("Error pulling image %s:%s", image, tag))
 		}
 	}()
 
@@ -271,7 +269,7 @@ func pullImage(image string, tag string) error {
 	}, true)
 
 	if response.statusCode == 200 {
-		log.Println(response.payload["progress"])
+		os.Stderr.WriteString(response.payload["progress"].(string))
 	}
 
 	if response.statusCode != 200 {
