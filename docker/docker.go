@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"os/user"
 	"regexp"
 	"strconv"
@@ -33,9 +34,10 @@ type dockerRequest struct {
 }
 
 type dockerResponse struct {
-	statusCode int
-	status     string
-	payload    map[string]interface{}
+	statusCode  int
+	status      string
+	contentType string
+	payload     map[string]interface{}
 }
 
 // Volume is as Volume does.
@@ -92,6 +94,11 @@ var executeDockerRemoteCommand = func(dr dockerRequest, showOutput ...bool) (doc
 		panic(err.Error())
 	}
 
+	contentType := ""
+	if value, ok := resp.Header["Content-Type"]; ok {
+		contentType = value[0]
+	}
+
 	defer resp.Body.Close()
 	body, err := ioutil.ReadAll(resp.Body)
 
@@ -100,9 +107,37 @@ var executeDockerRemoteCommand = func(dr dockerRequest, showOutput ...bool) (doc
 	}
 
 	if len(showOutput) > 0 && showOutput[0] {
-		outputRegex := regexp.MustCompile("[\\s\n]+(.*)")
-		output := outputRegex.FindStringSubmatch(string(body))[1]
-		fmt.Printf("%s", output)
+		if contentType == "application/vnd.docker.raw-stream" {
+			frameSize := 0
+
+			byteOffset := 8
+			byteHeader := body[:byteOffset]
+
+			for i := 0; i < byteOffset; i++ {
+				frameSize = int(byteHeader[byteOffset-1])
+			}
+
+			for byteOffset < len(body) {
+				nextFrame := frameSize
+
+				if len(body)-byteOffset >= frameSize {
+					nextFrame = len(body) - byteOffset
+				}
+
+				if byteHeader[0] == 1 {
+					os.Stdout.Write(body[byteOffset : byteOffset+nextFrame])
+				} else if byteHeader[1] == 0 {
+					os.Stderr.Write(body[byteOffset : byteOffset+nextFrame])
+				}
+
+				byteOffset += nextFrame
+			}
+
+		} else {
+			output := string(body)
+			fmt.Println(output)
+		}
+
 	}
 
 	if resp.StatusCode == 500 {
@@ -120,9 +155,10 @@ var executeDockerRemoteCommand = func(dr dockerRequest, showOutput ...bool) (doc
 		}
 	}
 	return dockerResponse{
-		statusCode: resp.StatusCode,
-		status:     resp.Status,
-		payload:    m,
+		statusCode:  resp.StatusCode,
+		status:      resp.Status,
+		payload:     m,
+		contentType: contentType,
 	}, err
 }
 
@@ -326,6 +362,7 @@ func attachToContainer(containerID string) error {
 			"logs":   "0",
 			"stream": "1",
 			"stdout": "1",
+			"stderr": "1",
 		},
 	}, true)
 	return err
